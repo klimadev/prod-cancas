@@ -1,0 +1,6 @@
+{
+  "name": "AI Whiteboard Editor",
+  "description": "Infinite node-based canvas for AI-assisted image generation and prompt planning.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
