@@ -1,277 +1,427 @@
 import React from "react";
-import { Handle, Position, NodeProps, addEdge, Node } from "@xyflow/react";
-import { CustomNodeData, useStore, AppNode } from "../../store/useStore";
-import { cn } from "../../lib/utils";
-import { Image as ImageIcon, FileText, StickyNote, Box, Terminal, Edit3, Type, Play, Trash2, Copy, Loader2, Palette } from "lucide-react";
+import { Handle, Position, NodeProps } from "@xyflow/react";
+import {
+  useStore,
+  AppNode,
+  CustomNodeData,
+  findAncestors,
+} from "../../store/useStore";
+import {
+  Image as ImageIcon,
+  Terminal,
+  StickyNote,
+  Box,
+  Palette,
+  MoreHorizontal,
+  Trash2,
+  Copy,
+  Download,
+  AlertCircle,
+  CheckCircle2,
+  Loader2,
+  Sparkles,
+  Play,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
+import { motion, AnimatePresence } from "motion/react";
 
-export function CustomNode({
-  id,
-  data,
-  selected,
-  positionAbsoluteX,
-  positionAbsoluteY,
-}: NodeProps<AppNode> & { positionAbsoluteX?: number; positionAbsoluteY?: number }) {
+const TYPE_CONFIG = {
+  identity: {
+    icon: Palette,
+    color: "from-pink-500 to-rose-600",
+    bg: "bg-pink-500/10",
+    border: "border-pink-500/30",
+    label: "Marca",
+  },
+  aiImage: {
+    icon: ImageIcon,
+    color: "from-purple-500 to-indigo-600",
+    bg: "bg-purple-500/10",
+    border: "border-purple-500/30",
+    label: "IA Visual",
+  },
+  textPrompt: {
+    icon: Terminal,
+    color: "from-green-500 to-emerald-600",
+    bg: "bg-green-500/10",
+    border: "border-green-500/30",
+    label: "Prompt",
+  },
+  note: {
+    icon: StickyNote,
+    color: "from-yellow-400 to-orange-500",
+    bg: "bg-yellow-500/10",
+    border: "border-yellow-500/30",
+    label: "Nota",
+  },
+  placeholder: {
+    icon: Box,
+    color: "from-slate-400 to-slate-600",
+    bg: "bg-slate-500/10",
+    border: "border-white/10",
+    label: "Esboço",
+  },
+};
+
+export function CustomNode({ id, data, selected }: NodeProps<AppNode>) {
   const updateNode = useStore((state) => state.updateNode);
   const deleteNode = useStore((state) => state.deleteNode);
   const duplicateNode = useStore((state) => state.duplicateNode);
+  const addNode = useStore((state) => state.addNode);
+  const addEdge = useStore((state) => state.addEdge);
+  const edges = useStore((state) => state.edges);
+  const nodes = useStore((state) => state.nodes);
 
-  const [isHovered, setIsHovered] = React.useState(false);
   const [isEditingTitle, setIsEditingTitle] = React.useState(false);
-  const [titleValue, setTitleValue] = React.useState(data.title);
+  const [isHovered, setIsHovered] = React.useState(false);
 
-  const handleTitleSubmit = () => {
-    setIsEditingTitle(false);
-    updateNode(id, { title: titleValue });
-  };
+  const config = TYPE_CONFIG[data.type] || TYPE_CONFIG.placeholder;
+  const Icon = config.icon;
 
-  const getIcon = () => {
-    switch (data.type) {
-      case "aiImage":
-        return <ImageIcon className="w-4 h-4 text-purple-500" />;
-      case "placeholder":
-        return <Box className="w-4 h-4 text-blue-500" />;
-      case "textPrompt":
-        return <Terminal className="w-4 h-4 text-green-500" />;
-      case "note":
-        return <StickyNote className="w-4 h-4 text-yellow-500" />;
-      default:
-        return <FileText className="w-4 h-4 text-gray-500" />;
+  const targetEdge = edges.find(
+    (e) => e.source === id && (e.sourceHandle === "right" || !e.sourceHandle),
+  );
+  const targetNode = targetEdge
+    ? nodes.find((n) => n.id === targetEdge.target && n.data.type === "aiImage")
+    : null;
+
+  const handleRunPrompt = async () => {
+    if (data.isGenerating) return;
+
+    const ancestors = findAncestors(
+      id,
+      useStore.getState().nodes,
+      useStore.getState().edges,
+    );
+
+    let activeNodeId = targetNode?.id;
+
+    if (!activeNodeId) {
+      const currentNode = nodes.find((n) => n.id === id);
+      activeNodeId = addNode(
+        "aiImage",
+        {
+          x: (currentNode?.position.x || 0) + 380,
+          y: currentNode?.position.y || 0,
+        },
+        {
+          title: "IA SINTETIZANDO...",
+          status: "generating",
+          isGenerating: true,
+        },
+      );
+
+      addEdge({
+        id: `e-${id}-right-${activeNodeId}-left-${Date.now()}`,
+        source: id,
+        target: activeNodeId,
+        sourceHandle: "right",
+        targetHandle: "left",
+        type: "bezier",
+        animated: true,
+        style: { stroke: "#3b82f6", strokeWidth: 2 },
+      });
+    } else {
+      updateNode(activeNodeId, { status: "generating", isGenerating: true });
+    }
+
+    try {
+      updateNode(id, { isGenerating: true, status: "generating" });
+      const { generateImage } = await import("../../services/ai");
+      const imageUrl = await generateImage(
+        data.prompt || data.content || "",
+        ancestors,
+        data.imageModel || "gemini-3.1-flash-image-preview",
+      );
+
+      const nodeData =
+        (useStore.getState().nodes.find((n) => n.id === activeNodeId)?.data as Partial<CustomNodeData>) ||
+        ({} as Partial<CustomNodeData>);
+      const history =
+        nodeData.imageHistory ||
+        (nodeData.imageUrl ? [nodeData.imageUrl as string] : []);
+      const newHistory = [...history, imageUrl];
+
+      updateNode(activeNodeId, {
+        imageUrl,
+        imageHistory: newHistory,
+        historyIndex: newHistory.length - 1,
+        title: "SÍNTESE COMPLETA",
+        isGenerating: false,
+        status: "completed",
+      });
+      updateNode(id, { isGenerating: false, status: "completed" });
+    } catch (e) {
+      updateNode(activeNodeId, {
+        title: "ERRO DE SÍNTESE",
+        isGenerating: false,
+        status: "error",
+      });
+      updateNode(id, { isGenerating: false, status: "error" });
     }
   };
 
   return (
-    <div
-      className={cn(
-        "relative w-64 glass-card rounded-xl transition-all duration-200 z-20",
-        selected ? "node-active" : 
-        data.status === "unseen" ? "border-green-400/50 shadow-[0_0_15px_rgba(34,197,94,0.15)]" :
-        data.isGenerating ? "border-blue-500/50 shadow-[0_0_20px_rgba(59,130,246,0.2)] animate-pulse" : "border-white/5 hover:border-white/20"
-      )}
+    <motion.div
+      initial={{ scale: 0.9, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
-      onContextMenu={(e) => {
-        // e.preventDefault(); // Uncomment to build a custom right-click menu
-      }}
+      className={`relative min-w-[240px] max-w-[320px] transition-all duration-300 ${
+        selected ? "z-[100]" : "z-10"
+      }`}
     >
-      {/* Handles N, S, W, E */}
-      <Handle
-        type="target"
-        position={Position.Top}
-        id="top"
-        className={cn("port transition-opacity", !isHovered && !selected ? "opacity-20" : "opacity-100")}
-      />
-      <Handle
-        type="source"
-        position={Position.Right}
-        id="right"
-        className={cn("port transition-opacity", !isHovered && !selected ? "opacity-20" : "opacity-100")}
-      />
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        id="bottom"
-        className={cn("port transition-opacity", !isHovered && !selected ? "opacity-20" : "opacity-100")}
-      />
-      <Handle
-        type="target"
-        position={Position.Left}
-        id="left"
-        className={cn("port transition-opacity", !isHovered && !selected ? "opacity-20" : "opacity-100")}
-      />
-
-      {/* Header */}
-      <div className="flex justify-between items-center p-3 border-b border-white/5">
-        <div className="flex items-center gap-2">
-          {getIcon()}
-          {isEditingTitle ? (
-            <input
-              autoFocus
-              className="flex-1 bg-transparent border-none outline-none text-[10px] uppercase font-bold tracking-widest text-slate-300 w-[120px]"
-              value={titleValue}
-              onChange={(e) => setTitleValue(e.target.value)}
-              onBlur={handleTitleSubmit}
-              onKeyDown={(e) => e.key === "Enter" && handleTitleSubmit()}
-            />
-          ) : (
-            <span
-              className={cn(
-                "text-[10px] uppercase font-bold tracking-widest cursor-text hover:text-slate-300 transition-colors",
-                data.status === "completed" || data.status === "unseen" ? "text-green-400" : "text-slate-400"
-              )}
-              onDoubleClick={() => setIsEditingTitle(true)}
+      <div
+        className={`overflow-hidden rounded-3xl bg-[#0d0f14]/80 backdrop-blur-3xl border-2 transition-all duration-500 shadow-2xl ${
+          selected
+            ? "border-blue-500/80 shadow-[0_0_40px_rgba(59,130,246,0.3)] ring-1 ring-blue-400/20"
+            : "border-white/5 hover:border-white/20"
+        }`}
+      >
+        <div
+          className={`flex items-center justify-between px-4 py-3 border-b border-white/5 ${selected ? "bg-blue-600/5" : "bg-white/[0.02]"}`}
+        >
+          <div className="flex items-center gap-3">
+            <motion.div
+              whileHover={{ rotate: 10, scale: 1.1 }}
+              className={`w-8 h-8 rounded-xl bg-gradient-to-br ${config.color} flex items-center justify-center shadow-lg group/icon relative overflow-hidden`}
             >
-              {data.title}
-            </span>
+              <Icon className="w-4 h-4 text-white relative z-10" />
+              <div className="absolute inset-0 bg-white/20 opacity-0 group-hover/icon:opacity-100 transition-opacity"></div>
+            </motion.div>
+
+            <div className="flex flex-col">
+              {isEditingTitle ? (
+                <input
+                  autoFocus
+                  value={data.title}
+                  onBlur={() => setIsEditingTitle(false)}
+                  onChange={(e) => updateNode(id, { title: e.target.value })}
+                  onKeyDown={(e) =>
+                    e.key === "Enter" && setIsEditingTitle(false)
+                  }
+                  className="bg-transparent border-none outline-none text-[10px] font-black uppercase tracking-[0.2em] text-white w-full"
+                />
+              ) : (
+                <span
+                  onDoubleClick={() => setIsEditingTitle(true)}
+                  className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 hover:text-white cursor-text transition-colors"
+                >
+                  {data.title || config.label}
+                </span>
+              )}
+              <span className="text-[8px] font-bold text-slate-600 uppercase tracking-widest">
+                {config.label} NODE
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <AnimatePresence>
+              {data.status === "generating" && (
+                <motion.div
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  exit={{ scale: 0 }}
+                >
+                  <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />
+                </motion.div>
+              )}
+            </AnimatePresence>
+            <div
+              className={`w-1.5 h-1.5 rounded-full ${data.status === "completed" ? "bg-green-500 shadow-[0_0_8px_#22c55e]" : "bg-slate-700"}`}
+            ></div>
+          </div>
+        </div>
+
+        <div className="p-4 space-y-4">
+          {data.type === "aiImage" && (
+            <div className={`relative w-full rounded-2xl bg-black/40 border border-white/5 overflow-hidden group/img group/canvas ${!data.imageUrl ? 'aspect-square flex items-center justify-center' : ''}`}>
+              {data.imageUrl ? (
+                <>
+                  <img
+                    src={data.imageUrl}
+                    referrerPolicy="no-referrer"
+                    className="w-full h-auto object-cover transition-all duration-700 group-hover/img:scale-105"
+                  />
+
+                  {data.imageHistory && data.imageHistory.length > 1 && (
+                    <div className="absolute top-2 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-black/80 backdrop-blur-md px-3 py-1.5 rounded-full opacity-0 group-hover/img:opacity-100 transition-all z-20 shadow-xl border border-white/10">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const newIdx = Math.max(
+                            0,
+                            (data.historyIndex || 0) - 1,
+                          );
+                          updateNode(id, {
+                            historyIndex: newIdx,
+                            imageUrl: data.imageHistory![newIdx],
+                          });
+                        }}
+                        disabled={(data.historyIndex || 0) === 0}
+                        className="text-white hover:text-blue-400 disabled:opacity-30 disabled:hover:text-white transition-colors"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <span className="text-[10px] text-white font-mono font-bold tracking-widest">
+                        {(data.historyIndex || 0) + 1}/
+                        {data.imageHistory.length}
+                      </span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const newIdx = Math.min(
+                            data.imageHistory!.length - 1,
+                            (data.historyIndex || 0) + 1,
+                          );
+                          updateNode(id, {
+                            historyIndex: newIdx,
+                            imageUrl: data.imageHistory![newIdx],
+                          });
+                        }}
+                        disabled={
+                          (data.historyIndex || 0) ===
+                          data.imageHistory!.length - 1
+                        }
+                        className="text-white hover:text-blue-400 disabled:opacity-30 disabled:hover:text-white transition-colors"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover/img:opacity-100 transition-all duration-300 flex items-end p-4">
+                    <button className="flex items-center gap-2 bg-white/10 hover:bg-white/20 backdrop-blur-md px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-widest border border-white/10 text-white transition-all">
+                      <Download className="w-3.5 h-3.5" /> Salvar
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="w-full h-full flex flex-col items-center justify-center gap-2 opacity-20">
+                  <ImageIcon className="w-12 h-12" />
+                  <span className="text-[10px] font-black uppercase tracking-widest">
+                    SÍNTESE PENDENTE
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {data.type === "identity" && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-3.5 h-3.5 text-pink-400" />
+                <span className="text-[10px] font-black uppercase text-pink-500/50 tracking-widest">
+                  DIRETRIZES DE MARCA
+                </span>
+              </div>
+              <textarea
+                className="w-full bg-black/40 border border-white/5 rounded-2xl p-3 text-xs text-slate-300 outline-none focus:border-pink-500/30 transition-all placeholder-slate-700 resize-none min-h-[80px]"
+                placeholder="Defina o DNA visual..."
+                value={data.content || data.prompt || ""}
+                onChange={(e) =>
+                  updateNode(id, {
+                    content: e.target.value,
+                    prompt: e.target.value,
+                  })
+                }
+              />
+            </div>
+          )}
+
+          {(data.type === "textPrompt" || data.type === "note") && (
+            <textarea
+              className="w-full bg-black/40 border border-white/5 rounded-2xl p-4 text-xs text-slate-300 outline-none focus:border-blue-500/30 transition-all placeholder-slate-700 resize-none min-h-[120px] leading-relaxed"
+              placeholder={
+                data.type === "textPrompt"
+                  ? "Comando para IA..."
+                  : "Sua anotação..."
+              }
+              value={data.prompt || data.content || ""}
+              onChange={(e) =>
+                updateNode(
+                  id,
+                  data.type === "textPrompt"
+                    ? { prompt: e.target.value }
+                    : { content: e.target.value },
+                )
+              }
+            />
           )}
         </div>
-        {data.isGenerating && (
-          <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse hidden sm:block"></div>
-        )}
-        {data.status === "unseen" && (
-          <div className="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_8px_#22c55e]"></div>
-        )}
-      </div>
 
-      {/* Body Content */}
-      <div 
-        className="p-4 flex flex-col gap-3 group"
-        onClick={() => {
-          if (data.status === "unseen") {
-            updateNode(id, { status: "completed" });
-          }
-        }}
-      >
-        {data.type === "aiImage" && (
-          <div className="w-full aspect-video bg-black/40 flex items-center justify-center relative rounded-xl overflow-hidden group-hover:bg-black/50 transition-colors">
-            {data.isGenerating ? (
-              <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent flex items-center justify-center">
-                 <div className="text-center z-10 w-full px-4">
-                    <div className="text-[10px] text-white/50 mb-1">Gerando...</div>
-                    <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
-                      <div className="h-full bg-blue-500 w-full animate-pulse [animation-duration:1s]"></div>
-                    </div>
-                  </div>
-              </div>
-            ) : data.imageUrl ? (
-              <img src={data.imageUrl} alt="IA Gerada" className="w-full h-full object-cover relative z-10" />
-            ) : (
-              <div className="absolute inset-0 flex items-center justify-center text-[10px] text-white/40">
-                Sem Imagem
-              </div>
-            )}
-          </div>
-        )}
-
-        {(data.type === "textPrompt" || data.type === "note") && (
-          <textarea
-            className="w-full bg-black/20 rounded-xl p-3 text-sm text-slate-300 placeholder-white/30 border border-white/5 outline-none focus:border-blue-500/50 resize-none transition-all leading-relaxed"
-            rows={4}
-            placeholder={data.type === "textPrompt" ? "Digite o prompt..." : "Faça uma anotação..."}
-            value={data.type === "textPrompt" ? data.prompt : data.content}
-            onChange={(e) => 
-              updateNode(id, data.type === "textPrompt" ? { prompt: e.target.value } : { content: e.target.value })
-            }
-          />
-        )}
-
-        {data.type === "placeholder" && (
-          <div className="w-full h-24 border-2 border-dashed border-white/10 rounded-xl flex items-center justify-center text-xs font-semibold text-white/40 bg-white/5">
-            Solte o arquivo aqui
-          </div>
-        )}
-
-        {data.type === "identity" && (
-          <div className="w-full flex flex-col gap-2">
-			      <div className="w-full flex items-center gap-2 mb-1 group/ident cursor-text">
-				      <Palette className="w-4 h-4 text-pink-400 group-hover/ident:scale-110 transition-transform" />
-				      <span className="text-[10px] uppercase font-bold text-pink-400 tracking-wider">Identidade de Estilo</span>
-			      </div>
-            <textarea
-              className="w-full h-16 bg-black/20 text-slate-300 text-xs p-2 rounded-lg outline-none resize-none placeholder-slate-500 border border-transparent focus:border-pink-500/30 transition-all pointer-events-auto"
-              placeholder="Diretrizes de marca, humor, estilo..."
-              value={data.prompt || ""}
-              onChange={(e) => updateNode(id, { prompt: e.target.value })}
-            />
-            {data.imageUrl ? (
-              <div className="relative w-full aspect-video rounded-lg overflow-hidden group/img">
-                <img src={data.imageUrl} alt="Referência" className="w-full h-full object-cover" />
-                <button 
-                  onClick={() => updateNode(id, { imageUrl: undefined })}
-                  className="absolute inset-0 bg-black/60 opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center text-xs font-bold tracking-wider text-pink-200 uppercase pointer-events-auto shadow-inner"
-                >
-                  Remover Imagem
-                </button>
-              </div>
-            ) : (
-              <div 
-                className="w-full h-12 border-2 border-dashed border-pink-500/20 bg-pink-500/5 rounded-lg flex flex-col items-center justify-center text-[10px] text-pink-300/60 cursor-pointer hover:bg-pink-500/10 hover:border-pink-500/40 transition-colors pointer-events-auto"
-                onClick={() => {
-                   const url = prompt("Insira a URL da imagem de referência:");
-                   if (url) updateNode(id, { imageUrl: url });
-                }}
-              >
-                <span className="font-semibold tracking-wide">Adicionar Imagem</span>
-                <span className="text-[8px] opacity-70">Clique para colar a URL</span>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Action Bar (Visible on Hover/Select) */}
-      {(isHovered || selected) && (
-        <div className="absolute -bottom-12 left-1/2 -translate-x-1/2 glass-card px-3 py-1.5 rounded-xl flex items-center gap-2">
-          {data.type === "textPrompt" && (
-             <>
-               <select 
-                 className="bg-black/30 text-[10px] text-slate-300 rounded border border-white/10 px-2 py-1 outline-none"
-                 value={data.imageModel || 'gemini-2.5-flash-image'}
-                 onChange={(e) => updateNode(id, { imageModel: e.target.value })}
-                 title="Modelo de Geração de Imagem"
-               >
-                  <option value="gemini-2.5-flash-image">Nano Banana (2.5 Flash)</option>
-                  <option value="gemini-3.1-flash-image-preview">Flash Image (3.1)</option>
-                  <option value="gemini-3-pro-image-preview">Pro Image (3.0)</option>
-               </select>
-               <button 
-                  className={cn("p-1.5 rounded-lg transition-colors", data.isGenerating ? "text-slate-500 cursor-not-allowed" : "hover:bg-white/10 text-blue-400")} 
-                  title="Executar Prompt"
+        <div className="px-4 py-3 bg-white/5 border-t border-white/5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 flex-1">
+            {data.type === "textPrompt" && (
+              <>
+                <button
+                  onClick={handleRunPrompt}
                   disabled={data.isGenerating}
-                  onClick={async () => {
-                    const addNode = useStore.getState().addNode;
-                    
-                    // Pre-create the node and edge
-                    const newNodeId = addNode('aiImage', { x: (positionAbsoluteX || 0) + 320, y: (positionAbsoluteY || 0) }, {
-                      title: "Gerando Imagem...",
-                      status: "generating",
-                      isGenerating: true,
-                    });
-                      
-                    const newEdge = { 
-                       id: "e-" + id + "-" + newNodeId, 
-                       source: id, 
-                       target: newNodeId, 
-                       targetHandle: 'left', 
-                       sourceHandle: 'right', 
-                       type: "bezier", 
-                       animated: true,
-                       style: { strokeWidth: 2, stroke: 'url(#edgeGradient)', filter: 'drop-shadow(0 0 2px rgba(59, 130, 246, 0.5))' }
-                    };
-                    useStore.getState().addEdge(newEdge);
-
-                    try {
-                      updateNode(id, { isGenerating: true, status: "generating" });
-                      const { generateImage } = await import('../../services/ai');
-                      const imageUrl = await generateImage(data.prompt || "", [], data.imageModel || "gemini-2.5-flash-image");
-                      
-                      updateNode(newNodeId, {
-                        imageUrl,
-                        title: "Imagem Gerada",
-                        isGenerating: false,
-                        status: "unseen" // Mark as new so user notices it
-                      });
-                    } catch (e) {
-                      console.error("Falha ao gerar", e);
-                      updateNode(id, { status: "error" });
-                      updateNode(newNodeId, { title: "Erro na Geração", isGenerating: false, status: "error" });
-                    } finally {
-                      updateNode(id, { isGenerating: false });
-                    }
-                  }}
-               >
-                 {data.isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                  className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white text-[10px] font-black uppercase px-4 py-2 rounded-xl transition-all shadow-lg shadow-blue-600/20 shrink-0"
+                >
+                  {data.isGenerating ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                  )}
+                  {targetNode ? "Regerar" : "Gerar"}
                 </button>
-                <div className="w-px h-4 bg-white/10 mx-1"></div>
+                <select
+                  value={data.imageModel || "gemini-2.5-flash"}
+                  onChange={(e) =>
+                    updateNode(id, { imageModel: e.target.value })
+                  }
+                  className="bg-black/40 text-[9px] font-bold text-slate-500 rounded-lg border border-white/10 px-2 py-1 outline-none hover:border-blue-500/50 transition-all uppercase tracking-tighter w-full max-w-[105px]"
+                >
+                  <option value="gemini-2.5-flash">2.5 Flash</option>
+                  <option value="gemini-3.1-flash-image-preview">
+                    3.1 Image
+                  </option>
+                  <option value="imagen-3">Imagen 3</option>
+                </select>
               </>
-           )}
-           <button className="p-1.5 hover:bg-white/10 rounded-lg text-slate-300 transition-colors" title="Duplicar" onClick={() => duplicateNode(id)}>
-             <Copy className="w-4 h-4" />
-           </button>
-           <button className="p-1.5 hover:bg-red-500/20 rounded-lg text-red-400 transition-colors" title="Excluir" onClick={() => deleteNode(id)}>
-             <Trash2 className="w-4 h-4" />
-           </button>
-         </div>
-       )}
-    </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => duplicateNode(id)}
+              className="p-2 text-slate-500 hover:text-white hover:bg-white/5 rounded-lg transition-all"
+              title="Duplicar"
+            >
+              <Copy className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => deleteNode(id)}
+              className="p-2 text-red-500/50 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all"
+              title="Remover"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <Handle
+        id="left"
+        type="target"
+        position={Position.Left}
+        className="w-3 h-3 !bg-[#06070a] !border-2 !border-blue-500/50 !shadow-[0_0_8px_rgba(59,130,246,0.3)] transition-all hover:!scale-150"
+      />
+      <Handle
+        id="right"
+        type="source"
+        position={Position.Right}
+        className="w-3 h-3 !bg-[#06070a] !border-2 !border-blue-500/50 !shadow-[0_0_8px_rgba(59,130,246,0.3)] transition-all hover:!scale-150"
+      />
+      <Handle
+        id="bottom"
+        type="source"
+        position={Position.Bottom}
+        className="w-3 h-3 !bg-[#06070a] !border-2 !border-white/10 transition-all hover:!scale-150"
+      />
+    </motion.div>
   );
 }
